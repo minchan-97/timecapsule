@@ -131,22 +131,35 @@ def inject_css(stage_file, intro=False):
     """intro=True 면 아이콘이 먼저 뜨고 배경이 뒤따라 번집니다."""
     b64 = img_b64(stage_file)
     bg = f"url('data:image/jpeg;base64,{b64}')" if b64 else "none"
-    bg_anim = "animation: bgIn 2.2s ease-out 1.15s both;" if intro else ""
+    bg_anim = "animation: veilOut 2.0s ease-out 1.15s both;" if intro else "opacity: 0; display: none;"
     css = f"""
 @import url('https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Gowun+Dodum&display=swap');
   #MainMenu, footer, header {{visibility: hidden;}}
-  .stApp {{background-color: #f3ece2;}}
-  .stApp::before {{
-    content: "";
-    position: fixed;
-    inset: 0;
+  .stApp {{
     background-image: {bg};
     background-size: cover;
     background-position: center top;
-    z-index: -1;
+    background-attachment: fixed;
+    background-color: #f3ece2;
+  }}
+  [data-testid="stAppViewContainer"],
+  [data-testid="stMain"],
+  [data-testid="stHeader"],
+  [data-testid="stBottomBlockContainer"],
+  section.main,
+  .main {{background: transparent !important;}}
+  /* 시작 화면에서 배경을 잠시 덮었다가 걷히는 막 */
+  .stApp::after {{
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: #f3ece2;
+    pointer-events: none;
+    z-index: 0;
     {bg_anim}
   }}
-  @keyframes bgIn {{from {{opacity: 0;}} to {{opacity: 1;}}}}
+  .block-container {{position: relative; z-index: 1;}}
+  @keyframes veilOut {{from {{opacity: 1;}} to {{opacity: 0;}}}}
 
   /* 시작 화면 아이콘 */
   .icon-wrap {{text-align: center; margin: 0.4rem 0 1.2rem;}}
@@ -163,7 +176,8 @@ def inject_css(stage_file, intro=False):
   @keyframes lateIn {{from {{opacity: 0;}} to {{opacity: 1;}}}}
 
   @media (prefers-reduced-motion: reduce) {{
-    .stApp::before, .icon-wrap img, .intro-late {{animation: none !important; opacity: 1 !important;}}
+    .stApp::after {{animation: none !important; opacity: 0 !important;}}
+    .icon-wrap img, .intro-late {{animation: none !important; opacity: 1 !important;}}
   }}
 
   .block-container {{max-width: 620px; padding-top: 2.2rem; padding-bottom: 4rem;}}
