@@ -132,10 +132,8 @@ def inject_css(stage_file, intro=False):
     b64 = img_b64(stage_file)
     bg = f"url('data:image/jpeg;base64,{b64}')" if b64 else "none"
     bg_anim = "animation: bgIn 2.2s ease-out 1.15s both;" if intro else ""
-    st.markdown(
-        f"""
-<link href="https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Gowun+Dodum&display=swap" rel="stylesheet">
-<style>
+    css = f"""
+@import url('https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Gowun+Dodum&display=swap');
   #MainMenu, footer, header {{visibility: hidden;}}
   .stApp {{background-color: #f3ece2;}}
   .stApp::before {{
@@ -227,10 +225,11 @@ def inject_css(stage_file, intro=False):
     background: rgba(253,249,240,0.95); border: 1px solid rgba(139,111,78,0.3);
   }}
   .stTextArea textarea {{font-family: 'Gaegu', cursive; font-size: 1.25rem; line-height: 1.9;}}
-</style>
-""",
-        unsafe_allow_html=True,
-    )
+"""
+    # 빈 줄이 하나라도 있으면 Streamlit 마크다운이 HTML 블록을 끊어버려
+    # 나머지 CSS가 화면에 글자로 찍힙니다. 반드시 전부 제거합니다.
+    css = "".join(line.strip() + " " for line in css.splitlines() if line.strip())
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
 
 
 def play_music():
@@ -468,9 +467,8 @@ def main():
                 f'<div class="icon-wrap"><img src="data:image/png;base64,{icon}" alt=""></div>',
                 unsafe_allow_html=True,
             )
-        st.markdown('<div class="intro-late">', unsafe_allow_html=True)
-        st.markdown('<div class="sky-title">타임캡슐</div>', unsafe_allow_html=True)
-        st.markdown('<div class="sky-sub">선생님이 알려준 코드를 넣어 주세요</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sky-title intro-late">타임캡슐</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sky-sub intro-late">선생님이 알려준 코드를 넣어 주세요</div>', unsafe_allow_html=True)
         play_music()
         code = st.text_input("반 코드", type="password")
         if st.button("들어가기"):
@@ -483,7 +481,6 @@ def main():
                 st.rerun()
             else:
                 st.error("코드가 맞지 않아요.")
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     if teacher:
