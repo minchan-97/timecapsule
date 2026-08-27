@@ -3,7 +3,6 @@
 편지를 팻말에 걸어두면 나무가 자라고, 마지막 수업에 하나씩 열립니다.
 반마다 날짜·코드·편지가 완전히 따로 굴러갑니다.
 """
-import base64
 import json
 import random
 from datetime import date, datetime
@@ -38,10 +37,24 @@ TEACHER_PIN = "0000"   # 배포 전에 반드시 바꾸세요. 이 코드로 들
 MUSIC_FILE  = "music.mp3"
 
 DATA_DIR = Path("data")
-ASSETS   = Path("assets")
+STATIC   = Path("static")
 
 STAGES      = ["stage1.jpg", "stage2.jpg", "stage3.jpg", "stage4.jpg"]
 STAGE_LABEL = ["아직 아무것도", "묘목", "자라는 중", "큰 나무"]
+
+# 꾸미기 아이템 — sky=하늘에 뜨는 것, ground=땅에 놓는 것
+ITEMS = {
+    "delphinium": {"label": "파란 꽃",  "zone": "ground", "w": 9},
+    "poppy":      {"label": "주황 꽃",  "zone": "ground", "w": 11},
+    "daisy":      {"label": "노란 꽃",  "zone": "ground", "w": 9},
+    "clover":     {"label": "클로버",   "zone": "ground", "w": 6},
+    "grass":      {"label": "풀과 돌",  "zone": "ground", "w": 20},
+    "bush":       {"label": "덤불",     "zone": "ground", "w": 20},
+    "butterfly":  {"label": "나비",     "zone": "sky",    "w": 8},
+    "bird":       {"label": "새",       "zone": "sky",    "w": 11},
+}
+
+MAX_PER_STUDENT = 3   # 한 사람이 놓을 수 있는 개수
 
 
 # ─────────────────────────────────────────────────────────────
@@ -100,6 +113,71 @@ def find_letter(key, number):
 
 
 # ─────────────────────────────────────────────────────────────
+# 농장 꾸미기 — 추가만 하는 기록장(append-only)
+#
+# 지우기는 아이들도 할 수 있지만, 파일에서 줄이 사라지지는 않습니다.
+# 지움도 하나의 기록으로 덧붙습니다. 그래서 언제든 되돌릴 수 있습니다.
+# ─────────────────────────────────────────────────────────────
+def garden_file(key):
+    return DATA_DIR / f"garden_{key}.jsonl"
+
+
+def garden_log(key):
+    path = garden_file(key)
+    if not path.exists():
+        return []
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    return out
+
+
+def garden_append(key, event):
+    DATA_DIR.mkdir(exist_ok=True)
+    with open(garden_file(key), "a", encoding="utf-8") as f:
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def garden_state(key, log=None):
+    """기록을 처음부터 재생해서 지금 화면에 보일 것만 남깁니다."""
+    placed = {}
+    for e in (garden_log(key) if log is None else log):
+        if e.get("op") == "add":
+            placed[e["id"]] = e
+        elif e.get("op") == "remove":
+            placed.pop(e.get("id"), None)
+    return list(placed.values())
+
+
+def garden_place(key, number, item, x, y):
+    # 같은 밀리초에 두 개를 놓으면 id가 겹쳐 하나가 사라집니다. 난수를 붙입니다.
+    eid = f"{number}-{int(datetime.now().timestamp()*1000)}-{random.randrange(1<<24):06x}"
+    garden_append(key, {
+        "op": "add", "id": eid, "number": number, "item": item,
+        "x": round(x, 1), "y": round(y, 1),
+        "at": datetime.now().isoformat(timespec="seconds"),
+    })
+    return eid
+
+
+def garden_remove(key, eid, by):
+    garden_append(key, {
+        "op": "remove", "id": eid, "by": by,
+        "at": datetime.now().isoformat(timespec="seconds"),
+    })
+
+
+def garden_count(key, number):
+    return sum(1 for e in garden_state(key) if e["number"] == number)
+
+
+# ─────────────────────────────────────────────────────────────
 # 성장 — 시작일로부터 몇 주가 지났는지로만 결정
 # ─────────────────────────────────────────────────────────────
 def weeks_elapsed(key):
@@ -118,10 +196,9 @@ def days_left(key):
     return max(0, (cfg(key)["open"] - date.today()).days)
 
 
-@st.cache_data
-def img_b64(name):
-    path = ASSETS / name
-    return base64.b64encode(path.read_bytes()).decode() if path.exists() else None
+def asset_url(name):
+    """Streamlit 정적 서빙 경로. base64 인라인보다 훨씬 가볍고 브라우저가 캐시합니다."""
+    return f"app/static/{name}"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -129,18 +206,24 @@ def img_b64(name):
 # ─────────────────────────────────────────────────────────────
 def inject_css(stage_file, intro=False):
     """intro=True 면 아이콘이 먼저 뜨고 배경이 뒤따라 번집니다."""
-    b64 = img_b64(stage_file)
-    bg = f"url('data:image/jpeg;base64,{b64}')" if b64 else "none"
+    bg_narrow = asset_url(stage_file)
+    bg_wide = asset_url(stage_file.replace(".jpg", "_wide.jpg"))
     bg_anim = "animation: veilOut 2.0s ease-out 1.15s both;" if intro else "opacity: 0; display: none;"
     css = f"""
 @import url('https://fonts.googleapis.com/css2?family=Gaegu:wght@400;700&family=Gowun+Dodum&display=swap');
   #MainMenu, footer, header {{visibility: hidden;}}
   .stApp {{
-    background-image: {bg};
+    background-image: url("{bg_narrow}");
     background-size: cover;
     background-position: center top;
     background-attachment: fixed;
     background-color: #f3ece2;
+  }}
+  @media (min-width: 820px) {{
+    .stApp {{
+      background-image: url("{bg_wide}");
+      background-position: center center;
+    }}
   }}
   [data-testid="stAppViewContainer"],
   [data-testid="stMain"],
@@ -239,6 +322,42 @@ def inject_css(stage_file, intro=False):
     background: rgba(253,249,240,0.95); border: 1px solid rgba(139,111,78,0.3);
   }}
   .stTextArea textarea {{font-family: 'Gaegu', cursive; font-size: 1.25rem; line-height: 1.9;}}
+  /* 농장 화면 */
+  .scene {{
+    position: relative; width: 100%; overflow: hidden;
+    border-radius: 6px; box-shadow: 0 6px 22px rgba(90,70,40,0.18);
+    background: #dceaf2;
+  }}
+  .scene-bg {{
+    position: absolute; inset: 0;
+    width: 100%; height: 100%; object-fit: cover; object-position: center top;
+  }}
+  .scene-bg.wide {{display: none;}}
+  @media (min-width: 820px) {{
+    .scene-bg {{display: none;}}
+    .scene-bg.wide {{display: block; object-position: center center;}}
+  }}
+  .deco {{
+    position: absolute; transform-origin: 50% 100%;
+    transform: translate(-50%, -100%);
+    filter: drop-shadow(0 3px 5px rgba(90,70,40,0.18));
+    animation-iteration-count: infinite;
+    animation-timing-function: ease-in-out;
+  }}
+  .deco.swayA {{animation-name: swayA;}}
+  .deco.flyA {{animation-name: flyA; transform-origin: 50% 50%;}}
+  @keyframes swayA {{
+    0%, 100% {{transform: translate(-50%, -100%) rotate(-2.2deg);}}
+    50%      {{transform: translate(-50%, -100%) rotate(2.2deg);}}
+  }}
+  @keyframes flyA {{
+    0%, 100% {{transform: translate(-50%, -50%) translate(0, 0) rotate(-3deg);}}
+    50%      {{transform: translate(-50%, -50%) translate(14px, -10px) rotate(3deg);}}
+  }}
+  .ghost {{opacity: 0.62;}}
+  @media (prefers-reduced-motion: reduce) {{
+    .deco {{animation: none !important;}}
+  }}
 """
     # 빈 줄이 하나라도 있으면 Streamlit 마크다운이 HTML 블록을 끊어버려
     # 나머지 CSS가 화면에 글자로 찍힙니다. 반드시 전부 제거합니다.
@@ -247,14 +366,21 @@ def inject_css(stage_file, intro=False):
 
 
 def play_music():
-    """assets/music.mp3 가 있으면 재생기를 띄웁니다. 없으면 조용히 넘어갑니다.
+    """음악을 자동 재생하고 재생기는 화면에서 감춥니다.
 
-    브라우저가 자동재생을 막는 경우가 많아 재생 버튼이 보이는 형태로 둡니다.
-    수업 시작할 때 한 번 눌러 주세요.
+    브라우저는 사용자가 한 번이라도 클릭한 뒤에야 소리를 허용합니다.
+    시작 화면에서 '들어가기'를 누르는 순간 그 조건이 충족되므로,
+    그 이후 화면에서는 자동 재생이 걸립니다.
+    시작 화면에는 음악을 넣지 않습니다.
     """
-    music = ASSETS / MUSIC_FILE
+    music = STATIC / MUSIC_FILE
     if not music.exists():
         return
+    st.markdown(
+        '<style>[data-testid="stAudio"]{position:absolute;width:1px;height:1px;'
+        'opacity:0;pointer-events:none;}</style>',
+        unsafe_allow_html=True,
+    )
     try:
         st.audio(str(music), loop=True, autoplay=True)
     except TypeError:
@@ -263,6 +389,45 @@ def play_music():
 
 def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def render_scene(key, extra=None, height_vh=58):
+    """배경 그림 위에 꾸민 것들을 얹어 보여줍니다.
+
+    바람 효과는 CSS 흔들림입니다. 배경 그림 속 나무는 그림이라 못 움직이고,
+    올려놓은 꽃과 나비만 흔들립니다.
+    """
+    items = garden_state(key)
+    if extra:
+        items = items + [extra]
+
+    layers = []
+    for i, e in enumerate(items):
+        meta = ITEMS.get(e["item"])
+        if not meta:
+            continue
+        # 아래쪽에 놓을수록 가까이 있는 것처럼 크게
+        depth = e["y"] / 100
+        scale = 0.75 + depth * 0.55
+        w = meta["w"] * scale
+        sway = "flyA" if meta["zone"] == "sky" else "swayA"
+        dur = 3.2 + (i % 5) * 0.7
+        delay = (i % 7) * 0.4
+        layers.append(
+            f'<img class="deco {sway}" src="{asset_url("items/" + e["item"] + ".png")}" '
+            f'style="left:{e["x"]}%;top:{e["y"]}%;width:{w:.1f}%;'
+            f'animation-duration:{dur:.1f}s;animation-delay:{delay:.1f}s;" alt="">'
+        )
+
+    stage = STAGES[stage_index(key)]
+    st.markdown(
+        f'<div class="scene" style="height:{height_vh}vh;">'
+        f'<img class="scene-bg" src="{asset_url(stage)}" alt="">'
+        f'<img class="scene-bg wide" src="{asset_url(stage.replace(".jpg", "_wide.jpg"))}" alt="">'
+        f'{"".join(layers)}</div>',
+        unsafe_allow_html=True,
+    )
+    return items
 
 
 def printable_html(key, letters):
@@ -347,37 +512,90 @@ def page_write(key):
 # 화면 2 — 내 나무 보기
 # ─────────────────────────────────────────────────────────────
 def page_tree(key):
+    """우리 농장 — 배경을 보고, 꽃을 놓고, 자기가 놓은 것은 치울 수 있습니다."""
     c = cfg(key)
-    st.markdown('<div class="sky-title">내 나무</div>', unsafe_allow_html=True)
     st.markdown(
-        f'<div class="sky-sub">{weeks_elapsed(key)}주차 · {STAGE_LABEL[stage_index(key)]} · 개봉까지 {days_left(key)}일</div>',
+        f'<div class="sky-sub">{c["name"]} · {weeks_elapsed(key)}주차 · '
+        f'{STAGE_LABEL[stage_index(key)]} · 개봉까지 {days_left(key)}일</div>',
         unsafe_allow_html=True,
     )
 
-    number = st.text_input("번호", max_chars=2, placeholder="예: 7", key=f"t_num_{key}")
-    if st.button("확인", key=f"t_btn_{key}"):
-        rec = find_letter(key, number.strip())
-        if not rec:
-            st.warning("그 번호로 넣은 편지가 없어요.")
+    number = st.text_input("번호", max_chars=2, placeholder="예: 7", key=f"t_num_{key}").strip()
+
+    # 미리보기용 임시 배치
+    preview = None
+    if number.isdigit():
+        item = st.session_state.get(f"g_item_{key}")
+        if item:
+            preview = {
+                "id": "_preview", "number": number, "item": item,
+                "x": st.session_state.get(f"g_x_{key}", 50),
+                "y": st.session_state.get(f"g_y_{key}", 80),
+            }
+
+    render_scene(key, extra=preview)
+
+    if not number.isdigit():
+        st.caption("번호를 넣으면 꽃을 놓을 수 있어요.")
+        return
+
+    rec = find_letter(key, number)
+    if rec:
+        written = datetime.fromisoformat(rec["written_at"]).date()
+        st.markdown(
+            f'<div class="center" style="margin:0.8rem 0;"><span class="badge">'
+            f'{esc(rec["nickname"])}의 편지는 잘 있어요 · {(date.today()-written).days}일째'
+            f'</span></div>',
+            unsafe_allow_html=True,
+        )
+
+    mine = garden_count(key, number)
+    st.markdown(f"**꾸미기** — {mine}/{MAX_PER_STUDENT}개 놓았어요")
+
+    if mine < MAX_PER_STUDENT:
+        names = list(ITEMS.keys())
+        labels = [ITEMS[i]["label"] for i in names]
+        picked = st.selectbox("무엇을 놓을까요", labels, key=f"g_sel_{key}")
+        st.session_state[f"g_item_{key}"] = names[labels.index(picked)]
+
+        zone = ITEMS[st.session_state[f"g_item_{key}"]]["zone"]
+        st.slider("왼쪽 ↔ 오른쪽", 5, 95, key=f"g_x_{key}",
+                  value=st.session_state.get(f"g_x_{key}", 50))
+        if zone == "ground":
+            st.slider("뒤쪽 ↔ 앞쪽", 68, 96, key=f"g_y_{key}",
+                      value=st.session_state.get(f"g_y_{key}", 82))
         else:
-            written = datetime.fromisoformat(rec["written_at"]).date()
-            st.markdown(
-                f"""
-<div class="paper">
-  <div class="center" style="font-family:'Gaegu',cursive;font-size:1.5rem;color:#5c6b4f;">
-    {esc(rec['nickname'])}의 편지는 잘 있어요
-  </div>
-  <div class="meta">
-    맡긴 날 {written.year}. {written.month}. {written.day} · {(date.today()-written).days}일째 보관 중<br>
-    {c['open'].month}월 {c['open'].day}일 마지막 수업에 열립니다.
-  </div>
-</div>
-""",
-                unsafe_allow_html=True,
-            )
+            st.slider("낮게 ↔ 높게", 20, 60, key=f"g_y_{key}",
+                      value=st.session_state.get(f"g_y_{key}", 42))
+
+        if st.button("여기에 놓기", key=f"g_put_{key}"):
+            garden_place(key, number,
+                         st.session_state[f"g_item_{key}"],
+                         st.session_state[f"g_x_{key}"],
+                         st.session_state[f"g_y_{key}"])
+            st.rerun()
+    else:
+        st.caption(f"한 사람이 {MAX_PER_STUDENT}개까지 놓을 수 있어요. 하나를 치우면 다시 놓을 수 있어요.")
+
+    # 자기가 놓은 것만 치울 수 있습니다
+    own = [e for e in garden_state(key) if e["number"] == number]
+    if own:
+        st.markdown("**내가 놓은 것**")
+        for e in own:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f'<span class="badge">{ITEMS[e["item"]]["label"]}</span>',
+                            unsafe_allow_html=True)
+            with col2:
+                if st.button("치우기", key=f"g_del_{e['id']}"):
+                    garden_remove(key, e["id"], by=number)
+                    st.rerun()
+        st.caption("치워도 기록은 남아서 선생님이 되돌릴 수 있어요.")
 
     st.markdown(
-        f'<div class="center" style="margin-top:1.4rem;"><span class="badge">{c["name"]} 편지 {len(load_letters(key))}통</span></div>',
+        f'<div class="center" style="margin-top:1.2rem;"><span class="badge">'
+        f'{c["name"]} 편지 {len(load_letters(key))}통 · 꾸민 것 {len(garden_state(key))}개'
+        f'</span></div>',
         unsafe_allow_html=True,
     )
 
@@ -428,6 +646,21 @@ def page_open():
             file_name=f"타임캡슐_{c['name']}_{c['open']}.html",
             mime="text/html",
         )
+
+        # 치운 것 되돌리기 — 기록이 전부 남아 있어 복구할 수 있습니다
+        removed = [e for e in garden_log(key) if e.get("op") == "remove"]
+        if removed:
+            with st.expander(f"치워진 것 되돌리기 ({len(removed)}개 기록)"):
+                state_ids = {e["id"] for e in garden_state(key)}
+                adds = {e["id"]: e for e in garden_log(key) if e.get("op") == "add"}
+                for r in reversed(removed[-20:]):
+                    a = adds.get(r["id"])
+                    if not a or a["id"] in state_ids:
+                        continue
+                    lbl = ITEMS.get(a["item"], {}).get("label", a["item"])
+                    if st.button(f"{a['number']}번의 {lbl} 되돌리기", key=f"undo_{r['id']}"):
+                        garden_append(key, dict(a, at=datetime.now().isoformat(timespec="seconds")))
+                        st.rerun()
         return
 
     if idx >= len(order):
@@ -475,15 +708,12 @@ def main():
 
     # 시작 화면 — 아이콘이 먼저 뜨고 배경이 뒤따릅니다
     if at_start:
-        icon = img_b64("icon.png")
-        if icon:
-            st.markdown(
-                f'<div class="icon-wrap"><img src="data:image/png;base64,{icon}" alt=""></div>',
-                unsafe_allow_html=True,
-            )
+        st.markdown(
+            f'<div class="icon-wrap"><img src="{asset_url("icon.png")}" alt=""></div>',
+            unsafe_allow_html=True,
+        )
         st.markdown('<div class="sky-title intro-late">타임캡슐</div>', unsafe_allow_html=True)
         st.markdown('<div class="sky-sub intro-late">선생님이 알려준 코드를 넣어 주세요</div>', unsafe_allow_html=True)
-        play_music()
         code = st.text_input("반 코드", type="password")
         if st.button("들어가기"):
             found = find_class_by_code(code)
@@ -517,7 +747,8 @@ def main():
         )
         return
 
-    tab1, tab2 = st.tabs(["편지 쓰기", "내 나무 보기"])
+    play_music()
+    tab1, tab2 = st.tabs(["편지 쓰기", "우리 농장"])
     with tab1:
         page_write(key)
     with tab2:
